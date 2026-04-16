@@ -1,10 +1,35 @@
-name: Teste
+name: Rodar script diário
 
 on:
+  schedule:
+    - cron: '0 11 * * *'  # 08:00 Brasil
   workflow_dispatch:
 
 jobs:
-  test:
+  run:
     runs-on: ubuntu-latest
+
     steps:
-      - run: echo "Funcionando"
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar script
+        run: python descobrir_carteiras.py --acumular
+        env:
+          GMGN_API_KEY: ${{ secrets.GMGN_API_KEY }}
+
+      - name: Salvar CSV no repo
+        run: |
+          git config --global user.name "bot"
+          git config --global user.email "bot@github.com"
+          git add .
+          git commit -m "update csv" || echo "nada pra commitar"
+          git push
