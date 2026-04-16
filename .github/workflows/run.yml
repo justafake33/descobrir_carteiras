@@ -1,0 +1,27 @@
+name: Rodar script diário
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # 08:00 Brasil (UTC-3)
+  workflow_dispatch: # permite rodar manual também
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar script
+        run: python descobrir_carteiras.py --acumular
+        env:
+          GMGN_API_KEY: ${{ secrets.GMGN_API_KEY }}
