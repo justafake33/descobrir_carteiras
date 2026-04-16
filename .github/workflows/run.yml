@@ -2,7 +2,7 @@ name: Rodar script diário
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # 08:00 Brasil
+    - cron: '0 0 * * *'  # 21:00 Brasil
   workflow_dispatch:
 
 permissions:
