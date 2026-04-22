@@ -2,7 +2,7 @@ name: Rodar script diário
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 21:00 Brasil
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -33,6 +33,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions@github.com"
-          git add .
-          git commit -m "update csv" || echo "nada pra commitar"
+          git pull
+          git add historico_makers.csv
+          git commit -m "update csv $(date +'%Y-%m-%d %H:%M:%S')" || echo "nada pra commitar"
           git push
