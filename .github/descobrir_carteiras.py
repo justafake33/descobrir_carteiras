@@ -223,14 +223,15 @@ def modo_acumular():
     if os.path.exists(HISTORICO_CSV):
         with open(HISTORICO_CSV, "r", encoding="utf-8") as f:
             linhas = list(csv.DictReader(f))
+
         ja_hoje = [l for l in linhas if l.get("data") == hoje]
+
         if ja_hoje:
             print(f"⚠️  Já existem {len(ja_hoje)} entradas para hoje ({hoje}).")
-            resp = input("   Sobrescrever? (s/N): ").strip().lower()
-            if resp != "s":
-                print("Cancelado."); return
+            print("Sobrescrevendo automaticamente (modo cloud)")
             # Remove entradas de hoje para re-inserir
             linhas = [l for l in linhas if l.get("data") != hoje]
+
     else:
         linhas = []
 
@@ -246,26 +247,29 @@ def modo_acumular():
     for addr, minfo in makers.items():
         raw = stats_map.get(addr) or {}
         s   = extrair_stats(addr, minfo, raw)
+
         if not s["_raw_stats_ok"]:
-            continue  # sem stats = não acumula
+            continue
         if s["is_kol"] or s["is_lixo"]:
-            continue  # exclui lixo mesmo no modo acumular
+            continue
+
         linha = {"data": hoje}
-        for campo in CAMPOS_HIST[1:]:  # skip "data"
+        for campo in CAMPOS_HIST[1:]:
             linha[campo] = s.get(campo, "")
+
         novas.append(linha)
 
-    # Escreve tudo (histórico anterior + novas entradas de hoje)
-    arquivo_existe = os.path.exists(HISTORICO_CSV)
+    # Escreve tudo
     with open(HISTORICO_CSV, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CAMPOS_HIST, extrasaction="ignore")
         w.writeheader()
-        w.writerows(linhas)   # histórico anterior (sem hoje)
-        w.writerows(novas)    # entradas de hoje
+        w.writerows(linhas)
+        w.writerows(novas)
 
     print(f"\n✅ {len(novas)} makers adicionados para {hoje}")
     total = len(linhas) + len(novas)
     datas = sorted({l["data"] for l in linhas} | {hoje})
+
     print(f"   Total no histórico: {total} entradas | {len(datas)} dias")
     print(f"   Dias registrados: {', '.join(datas[-5:])}{'...' if len(datas) > 5 else ''}")
 
