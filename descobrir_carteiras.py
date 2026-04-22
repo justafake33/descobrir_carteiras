@@ -33,130 +33,194 @@ CAMPOS_HIST = ["data", "address", "win_rate", "followers", "trades_30d",
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 def _get(path, extra_params=None, timeout=15, retries=3):
+    base_pairs = [("timestamp", str(int(time.time()))),
+                  ("client_id", str(uuid.uuid4()))]
+    if extra_params is None:
+        params = base_pairs
+    elif isinstance(extra_params, dict):
+        params = base_pairs + list(extra_params.items())
+    else:
+        params = base_pairs + list(extra_params)
+
+    url = f"{GMGN_BASE}{path}"
     for tentativa in range(retries):
         try:
-            r = SESSION.get(f"{GMGN_BASE}{path}",
-                            headers={"X-APIKEY": GMGN_API_KEY},
-                            params=extra_params,
-                            timeout=timeout)
-
+            r = SESSION.get(url, headers={"X-APIKEY": GMGN_API_KEY},
+                            params=params, timeout=timeout)
+            if r.status_code == 429:
+                reset = None
+                try: reset = r.json().get("reset_at")
+                except: pass
+                w = max(float(reset) - time.time(), 3) if reset else 15
+                print(f"  [429] rate limit — aguardando {w:.0f}s...")
+                time.sleep(min(w, 60))
+                continue
             if r.status_code == 200:
                 body = r.json()
                 if body.get("code") == 0:
                     return body.get("data")
-
+                print(f"  [ERRO] code={body.get('code')} — "
+                      f"{body.get('msg') or body.get('message') or body.get('error')}")
+            else:
+                print(f"  [ERRO] HTTP {r.status_code} — {r.text[:150]}")
         except Exception as e:
-            print(f"[TENTATIVA {tentativa+1}] erro: {e}")
+            print(f"  [TENTATIVA {tentativa+1}] erro: {e}")
             time.sleep(2)
 
     return None
 
 # ── Coletar makers ────────────────────────────────────────────────────────────
 def coletar_makers(min_aparicoes=1):
+    print("\n=== ETAPA 1: Coletando makers de /v1/user/smartmoney ===")
     contagem = Counter()
     maker_info_map = {}
     offset = 0
 
-    for _ in range(PAGES_TRADES):
-        data = _get("/v1/user/smartmoney", {"chain": CHAIN, "limit": "100", "offset": str(offset)})
-        if not data:
-            break
+    for page in range(1, PAGES_TRADES + 1):
+        data = _get("/v1/user/smartmoney",
+                    {"chain": CHAIN, "limit": "100", "offset": str(offset)})
+        if data is None:
+            print(f"  Página {page} falhou"); break
 
-        trades = data if isinstance(data, list) else data.get("items", [])
+        trades = data if isinstance(data, list) else (
+            data.get("list") or data.get("activities") or data.get("items") or [])
+        if not trades:
+            print(f"  Sem trades na página {page}"); break
 
         for t in trades:
-            maker = t.get("maker") or ""
+            maker = t.get("maker") or t.get("wallet_address") or ""
             if not maker:
                 continue
             contagem[maker] += 1
             if maker not in maker_info_map:
                 maker_info_map[maker] = t.get("maker_info") or {}
 
+        print(f"  Página {page}: {len(trades)} trades | {len(contagem)} makers únicos")
+        if len(trades) < 100:
+            break
         offset += 100
-        time.sleep(0.5)
+        time.sleep(0.8)
 
-    return {m: maker_info_map[m] for m in contagem if contagem[m] >= min_aparicoes}
+    ativos = {m: maker_info_map[m] for m in contagem if contagem[m] >= min_aparicoes}
+    print(f"  {len(ativos)} makers com ≥{min_aparicoes} aparição(ões)")
+    return ativos
 
-# ── Stats ─────────────────────────────────────────────────────────────────────
-def buscar_stats_todos(enderecos):
+# ── Stats individuais ─────────────────────────────────────────────────────────
+def buscar_stats_todos(enderecos, silencioso=False):
+    if not silencioso:
+        print(f"\n=== ETAPA 2: Stats de {len(enderecos)} wallets ===")
     resultado = {}
-    for addr in enderecos:
-        data = _get("/v1/user/wallet_stats", {"chain": CHAIN, "wallet_address": addr, "period": "30d"})
+    for i, addr in enumerate(enderecos, 1):
+        data = _get("/v1/user/wallet_stats",
+                    {"chain": CHAIN, "wallet_address": addr, "period": "30d"})
         if data:
             resultado[addr] = data
-        time.sleep(0.3)
+        if not silencioso:
+            print(f"  [{i:3}/{len(enderecos)}] {addr[:16]}... {'✓' if data else '✗'}")
+        time.sleep(0.5)
     return resultado
 
-# ── Extrair stats ─────────────────────────────────────────────────────────────
+# ── Extrair campos padronizados ───────────────────────────────────────────────
 def extrair_stats(address, maker_info, raw):
     common = raw.get("common") or {} if raw else {}
 
+    tags_feed  = set(t.lower() for t in (maker_info.get("tags") or []))
+    tags_stats = set(t.lower() for t in (common.get("tags") or []))
+    tags = tags_feed | tags_stats
+
+    is_kol  = bool(tags & {"kol", "influencer", "renowned"})
+    is_lixo = bool(tags & TAGS_LIXO)
+
+    s = raw or {}
+    pnl_stat   = s.get("pnl_stat") or {}
+    win_rate   = float(pnl_stat.get("winrate") or pnl_stat.get("win_rate") or
+                       s.get("winrate") or 0)
+    followers  = int(common.get("follow_count") or 0)
+    trades_30d = int(s.get("buy") or s.get("buy_count") or 0)
+    pnl_30d    = float(s.get("realized_profit") or 0)
+    pnl_ratio  = float(s.get("realized_profit_pnl") or s.get("pnl") or 0)
+    sol_balance = float(s.get("native_balance") or 0)
+
+    created_at = common.get("created_at")
+    age_days   = None
+    if created_at:
+        try: age_days = (time.time() - float(created_at)) / 86400
+        except: pass
+
     return {
-        "address": address,
-        "win_rate": float(raw.get("winrate", 0)) if raw else 0,
-        "followers": int(common.get("follow_count", 0)),
-        "trades_30d": int(raw.get("buy", 0)) if raw else 0,
-        "pnl_30d": float(raw.get("realized_profit", 0)) if raw else 0,
-        "pnl_ratio": float(raw.get("pnl", 0)) if raw else 0,
-        "sol_balance": float(raw.get("native_balance", 0)) if raw else 0,
-        "wallet_age_days": 0,
-        "tags": "",
-        "twitter": "",
-        "_raw_stats_ok": bool(raw),
-        "is_kol": False,
-        "is_lixo": False
+        "address":         address,
+        "tags":            ",".join(sorted(tags)),
+        "twitter":         common.get("twitter_username") or "",
+        "is_kol":          is_kol,
+        "is_lixo":         is_lixo,
+        "win_rate":        round(win_rate, 3),
+        "followers":       followers,
+        "trades_30d":      trades_30d,
+        "pnl_30d":         round(pnl_30d, 2),
+        "pnl_ratio":       round(pnl_ratio, 3),
+        "sol_balance":     round(sol_balance, 2),
+        "wallet_age_days": round(age_days, 0) if age_days else None,
+        "_raw_stats_ok":   bool(raw),
     }
 
-# ── Modo acumular (CORRIGIDO) ─────────────────────────────────────────────────
+# ── Modo --acumular ───────────────────────────────────────────────────────────
 def modo_acumular():
     hoje = date.today().isoformat()
     print(f"\n📥 Modo acumulação — {hoje}")
+    print(f"   Arquivo: {HISTORICO_CSV}\n")
 
     if os.path.exists(HISTORICO_CSV):
         with open(HISTORICO_CSV, "r", encoding="utf-8") as f:
             linhas = list(csv.DictReader(f))
-
-        # REMOVE entradas do dia automaticamente
+        ja_hoje = [l for l in linhas if l.get("data") == hoje]
+        if ja_hoje:
+            print(f"⚠️  Já existem {len(ja_hoje)} entradas para hoje — sobrescrevendo automaticamente.")
         linhas = [l for l in linhas if l.get("data") != hoje]
-        print("Sobrescrevendo automaticamente (modo cloud)")
-
     else:
         linhas = []
 
-    makers = coletar_makers()
+    makers = coletar_makers(min_aparicoes=1)
     if not makers:
-        return
+        print("⛔ Nenhum maker coletado — API sem dados ou sem chave.")
+        sys.exit(1)
 
-    stats_map = buscar_stats_todos(list(makers.keys()))
+    stats_map = buscar_stats_todos(list(makers.keys()), silencioso=True)
+    print(f"  Stats obtidos: {len(stats_map)}/{len(makers)}")
 
     novas = []
     for addr, minfo in makers.items():
-        s = extrair_stats(addr, minfo, stats_map.get(addr))
-
+        raw = stats_map.get(addr) or {}
+        s   = extrair_stats(addr, minfo, raw)
         if not s["_raw_stats_ok"]:
             continue
-
+        if s["is_kol"] or s["is_lixo"]:
+            continue
         linha = {"data": hoje}
         for campo in CAMPOS_HIST[1:]:
             linha[campo] = s.get(campo, "")
-
         novas.append(linha)
 
     with open(HISTORICO_CSV, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CAMPOS_HIST)
+        w = csv.DictWriter(f, fieldnames=CAMPOS_HIST, extrasaction="ignore")
         w.writeheader()
         w.writerows(linhas)
         w.writerows(novas)
 
-    print(f"✅ {len(novas)} adicionados")
+    print(f"\n✅ {len(novas)} makers adicionados para {hoje}")
+    total = len(linhas) + len(novas)
+    datas = sorted({l["data"] for l in linhas} | {hoje})
+    print(f"   Total no histórico: {total} entradas | {len(datas)} dias")
+    print(f"   Dias registrados: {', '.join(datas[-5:])}{'...' if len(datas) > 5 else ''}")
 
-# ── Entry ─────────────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if not GMGN_API_KEY:
-        print("Falta API KEY")
+        print("❌ Falta GMGN_API_KEY\n   Defina a variável de ambiente GMGN_API_KEY")
         sys.exit(1)
 
     modo = sys.argv[1] if len(sys.argv) > 1 else ""
-
     if modo == "--acumular":
         modo_acumular()
+    else:
+        print("Uso: python descobrir_carteiras.py --acumular")
+        sys.exit(1)
