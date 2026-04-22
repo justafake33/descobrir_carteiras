@@ -32,28 +32,24 @@ CAMPOS_HIST = ["data", "address", "win_rate", "followers", "trades_30d",
                "tags", "twitter"]
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
-def _get(path, extra_params=None, timeout=15):
-    base_pairs = [("timestamp", str(int(time.time()))),
-                  ("client_id", str(uuid.uuid4()))]
+def _get(path, extra_params=None, timeout=15, retries=3):
+    for tentativa in range(retries):
+        try:
+            r = SESSION.get(f"{GMGN_BASE}{path}",
+                            headers={"X-APIKEY": GMGN_API_KEY},
+                            params=extra_params,
+                            timeout=timeout)
 
-    params = base_pairs + (list(extra_params.items()) if isinstance(extra_params, dict) else extra_params or [])
+            if r.status_code == 200:
+                body = r.json()
+                if body.get("code") == 0:
+                    return body.get("data")
 
-    try:
-        r = SESSION.get(f"{GMGN_BASE}{path}", headers={"X-APIKEY": GMGN_API_KEY}, params=params, timeout=timeout)
+        except Exception as e:
+            print(f"[TENTATIVA {tentativa+1}] erro: {e}")
+            time.sleep(2)
 
-        if r.status_code != 200:
-            print(f"[ERRO] HTTP {r.status_code}")
-            return None
-
-        body = r.json()
-        if body.get("code") != 0:
-            return None
-
-        return body.get("data")
-
-    except Exception as e:
-        print(f"[EXC] {e}")
-        return None
+    return None
 
 # ── Coletar makers ────────────────────────────────────────────────────────────
 def coletar_makers(min_aparicoes=1):
